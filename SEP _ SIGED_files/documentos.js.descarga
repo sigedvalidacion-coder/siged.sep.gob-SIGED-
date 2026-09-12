@@ -1,0 +1,261 @@
+// ============================================
+// ARCHIVO: js/documentos.js — descarga vía fetch+blob (sin iframe)
+// ============================================
+document.addEventListener('DOMContentLoaded', function () {
+    const btnRestablecer = document.getElementById('btn-restablecer');
+    const btnNvoIntento = document.getElementById('btn-nvo-intento');
+    const btnReintentarError = document.getElementById('btn-reintentar-error');
+
+    function restablecerFormulario() {
+        window.location.href = window.location.pathname;
+    }
+
+    if (btnRestablecer) btnRestablecer.addEventListener('click', restablecerFormulario);
+    if (btnNvoIntento) btnNvoIntento.addEventListener('click', restablecerFormulario);
+    if (btnReintentarError) btnReintentarError.addEventListener('click', restablecerFormulario);
+
+    const resultConData = document.getElementById('sectionResultWithData');
+    const resultSinData = document.getElementById('divResultsWithoutData');
+
+    if (resultConData) {
+        window.scrollTo({ top: resultConData.offsetTop - 100, behavior: 'smooth' });
+    } else if (resultSinData) {
+        window.scrollTo({ top: resultSinData.offsetTop - 100, behavior: 'smooth' });
+    }
+
+    const btnDescargar = document.getElementById('btn-descargar-certificado');
+    if (!btnDescargar) {
+        return;
+    }
+
+    let unlockTimer = null;
+    let hideToastTimer = null;
+    let progressTimer = null;
+    let progressValue = 0;
+    let abortController = null;
+    let timeoutId = null;
+
+    const toast = document.createElement('div');
+    toast.id = 'sep-auth-toast';
+    toast.className = 'sep-auth-toast';
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+    toast.innerHTML =
+        '<p class="sep-auth-toast__title" id="sep-auth-toast-title">Sistema Sep esta Autenticando el Certificado</p>' +
+        '<div class="sep-auth-toast__bar" aria-hidden="true">' +
+        '<div class="sep-auth-toast__bar-fill" id="sep-auth-toast-bar"></div>' +
+        '</div>';
+    document.body.appendChild(toast);
+
+    const toastTitle = document.getElementById('sep-auth-toast-title');
+    const toastBar = document.getElementById('sep-auth-toast-bar');
+
+    function clearProgressTimer() {
+        if (progressTimer) {
+            clearInterval(progressTimer);
+            progressTimer = null;
+        }
+    }
+
+    function clearHideToastTimer() {
+        if (hideToastTimer) {
+            clearTimeout(hideToastTimer);
+            hideToastTimer = null;
+        }
+    }
+
+    function setProgress(value) {
+        progressValue = Math.max(0, Math.min(100, value));
+        if (toastBar) {
+            toastBar.style.width = progressValue + '%';
+        }
+    }
+
+    function showAuthToast() {
+        clearHideToastTimer();
+        clearProgressTimer();
+        toast.classList.remove('is-error', 'is-success');
+        toast.classList.add('is-visible');
+        if (toastTitle) {
+            toastTitle.textContent = 'Sistema Sep esta Autenticando el Certificado';
+        }
+        setProgress(12);
+
+        progressTimer = setInterval(function () {
+            if (progressValue >= 88) {
+                return;
+            }
+            setProgress(progressValue + Math.max(1, Math.round((90 - progressValue) * 0.08)));
+        }, 450);
+    }
+
+    function finishToast(message, isError) {
+        clearProgressTimer();
+        toast.classList.remove('is-error', 'is-success');
+        toast.classList.add(isError ? 'is-error' : 'is-success');
+        toast.classList.add('is-visible');
+        if (toastTitle) {
+            toastTitle.textContent = message;
+        }
+        setProgress(isError ? Math.max(progressValue, 35) : 100);
+
+        clearHideToastTimer();
+        hideToastTimer = setTimeout(function () {
+            toast.classList.remove('is-visible', 'is-error', 'is-success');
+        }, isError ? 4500 : 2200);
+    }
+
+    function unlockButton() {
+        if (unlockTimer) {
+            clearTimeout(unlockTimer);
+            unlockTimer = null;
+        }
+        btnDescargar.removeAttribute('aria-busy');
+        btnDescargar.style.opacity = '';
+        btnDescargar.style.pointerEvents = '';
+        if ('disabled' in btnDescargar) {
+            btnDescargar.disabled = false;
+        }
+    }
+
+    function cleanupRequest() {
+        if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
+        }
+        if (abortController) {
+            try {
+                abortController.abort();
+            } catch (e) {}
+            abortController = null;
+        }
+        unlockButton();
+    }
+
+    function buildDownloadUrl(folio, tipo, base) {
+        const params = new URLSearchParams({
+            tipo: tipo,
+            folio: folio,
+        });
+        return base + 'emit_publico.php?' + params.toString();
+    }
+
+    function filenameFromDisposition(header, fallback) {
+        if (!header) {
+            return fallback;
+        }
+        const m = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(header);
+        if (!m) {
+            return fallback;
+        }
+        try {
+            return decodeURIComponent(m[1].replace(/"/g, '').trim()) || fallback;
+        } catch (e) {
+            return m[1].replace(/"/g, '').trim() || fallback;
+        }
+    }
+
+    function downloadBlob(blob, fileName) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName || 'certificado.pdf';
+        a.rel = 'noopener';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () {
+            URL.revokeObjectURL(url);
+        }, 60000);
+    }
+
+    btnDescargar.addEventListener('click', async function () {
+        const modo = (btnDescargar.getAttribute('data-descarga-modo') || 'generar').toLowerCase();
+        const enlace = btnDescargar.getAttribute('data-descarga-url') || '';
+
+        if (modo === 'enlace') {
+            if (!enlace) {
+                finishToast('No hay URL de descarga configurada.', true);
+                return;
+            }
+            showAuthToast();
+            finishToast('Abriendo enlace público del certificado…', false);
+            window.location.href = enlace;
+            return;
+        }
+
+        const folio = btnDescargar.getAttribute('data-folio') || '';
+        const tipo = btnDescargar.getAttribute('data-tipo-emision') || '';
+        let base = btnDescargar.getAttribute('data-serviciopdf-base') || '/serviciopdf/';
+        if (!folio || !tipo) {
+            finishToast('No hay datos suficientes para generar el certificado.', true);
+            return;
+        }
+
+        if (!base.endsWith('/')) {
+            base += '/';
+        }
+
+        cleanupRequest();
+        showAuthToast();
+        btnDescargar.setAttribute('aria-busy', 'true');
+        btnDescargar.style.opacity = '0.7';
+        btnDescargar.style.pointerEvents = 'none';
+        if ('disabled' in btnDescargar) {
+            btnDescargar.disabled = true;
+        }
+
+        abortController = new AbortController();
+        timeoutId = setTimeout(function () {
+            finishToast('Tiempo de espera agotado. Intente de nuevo.', true);
+            cleanupRequest();
+        }, 180000);
+
+        const url = buildDownloadUrl(folio, tipo, base);
+
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                credentials: 'omit',
+                signal: abortController.signal,
+            });
+            const contentType = (response.headers.get('content-type') || '').toLowerCase();
+
+            if (!response.ok || contentType.indexOf('application/pdf') === -1) {
+                let message = 'No se pudo autenticar el certificado.';
+                try {
+                    const data = await response.json();
+                    if (data && data.error) {
+                        message = data.error;
+                    }
+                } catch (e) {}
+                finishToast(message, true);
+                cleanupRequest();
+                return;
+            }
+
+            const blob = await response.blob();
+            if (!blob || blob.size < 500) {
+                finishToast('PDF vacío o inválido.', true);
+                cleanupRequest();
+                return;
+            }
+
+            const fallbackName = 'CERT-AUTENTICADO.pdf';
+            const fileName = filenameFromDisposition(
+                response.headers.get('content-disposition'),
+                response.headers.get('x-download-filename') || fallbackName
+            );
+            downloadBlob(blob, fileName);
+            finishToast('Certificado autenticado. Descargando…', false);
+            cleanupRequest();
+        } catch (err) {
+            if (err && err.name === 'AbortError') {
+                return;
+            }
+            finishToast((err && err.message) ? err.message : 'Error al descargar el certificado.', true);
+            cleanupRequest();
+        }
+    });
+});
